@@ -23,18 +23,18 @@ builder.Host.UseSerilog();
 
 // Add services to the container.
 // Hard-coded connection string - no abstraction
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
-    ?? "Server=(localdb)\\mssqllocaldb;Database=TightlyCoupledWebShop;Trusted_Connection=true;MultipleActiveResultSets=true";
+//var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
+//    ?? "Server=localhost,51433;Database=TightlyCoupledWebShop;User Id=sa;Password=YourStrong!Passw0rd;";
 
-// Verify the connection string matches our global utility - tight coupling
-if (connectionString != GlobalUtilities.DATABASE_CONNECTION)
-{
-    Console.WriteLine("WARNING: Connection string mismatch between appsettings and GlobalUtilities!");
-    GlobalUtilities.LogError("Connection string mismatch detected");
-}
+//// Verify the connection string matches our global utility - tight coupling
+//if (connectionString != GlobalUtilities.DATABASE_CONNECTION)
+//{
+//    Console.WriteLine("WARNING: Connection string mismatch between appsettings and GlobalUtilities!");
+//    GlobalUtilities.LogError("Connection string mismatch detected");
+//}
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseSqlServer(builder.Configuration.GetConnectionString("TightlyCoupledWebShop")));
 
 builder.Services.AddDefaultIdentity<AppUser>(options => 
 {
@@ -150,4 +150,16 @@ AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
 };
 
 GlobalUtilities.LogError("Application startup completed");
+
+// Aspire integration
+app.MapDefaultEndpoints(); // aspire
+
+// Run EF Core migrations at startup
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    db.Database.Migrate();
+}
+
 app.Run();
+

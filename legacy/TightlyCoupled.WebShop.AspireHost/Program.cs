@@ -1,4 +1,5 @@
 ﻿using System.Net.Sockets;
+using Aspire.Hosting.ApplicationModel;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -6,26 +7,32 @@ var builder = DistributedApplication.CreateBuilder(args);
 var papercut = builder.AddContainer("papercut", "jijiechen/papercut", "latest")
   .WithEndpoint("smtp", e =>
   {
-    e.TargetPort = 25;   // container port
-    e.Port = 25;         // host port (optional—omit to auto-assign)
-    e.Protocol = ProtocolType.Tcp;
-    e.UriScheme = "smtp"; // makes the resolved value look like smtp://host:port
+      e.TargetPort = 25;
+      e.Port = 25;
+      e.Protocol = ProtocolType.Tcp;
+      e.UriScheme = "smtp";
   })
   .WithEndpoint("ui", e =>
   {
-    e.TargetPort = 37408;
-    e.Port = 37408;      // optional – Aspire can allocate
-    e.UriScheme = "http";
+      e.TargetPort = 37408;
+      e.Port = 37408;
+      e.UriScheme = "http";
   });
+
+var sqlPassword = builder.AddParameter("sql-password", "YourStrong!Passw0rd", secret: true);
+
+// Add SQL Server container with a persistent volume
+var sql = builder.AddSqlServer("sql", password: sqlPassword)
+                 .WithDataVolume()
+                 .WithLifetime(ContainerLifetime.Persistent);
+
+// Add a database inside that SQL Server
+var db = sql.AddDatabase("TightlyCoupledWebShop");
 
 // Your web project
 var web = builder.AddProject<Projects.TightlyCoupled_WebShop>("web")
     .WithHttpHealthCheck("/health")
-    // Pass the endpoints to the app via env vars (EndpointReference resolves to a URL at run time)
-    .WithEnvironment("Papercut__Smtp__Url", papercut.GetEndpoint("smtp"))
-    .WithEnvironment("Papercut__Ui__Url", papercut.GetEndpoint("ui"));
-
-// (optionally) if your app wants separate host/port values, you can parse the URL at startup,
-// or expose two env vars and parse them from the URL inside the app.
+    .WithReference(db)
+    .WaitFor(db);
 
 builder.Build().Run();
