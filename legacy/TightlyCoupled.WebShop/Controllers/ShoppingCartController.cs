@@ -20,6 +20,7 @@ namespace TightlyCoupled.WebShop.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly ILogger<ShoppingCartController> _logger;
+        private readonly IConfiguration _configuration;
         
         // Hard-coded configuration - TERRIBLE practice for demonstrating tight coupling
         private const string LOG_FILE_PATH = @"C:\Logs\WebShop\cart_operations.log";
@@ -31,63 +32,39 @@ namespace TightlyCoupled.WebShop.Controllers
         private const int SMTP_PORT = 587;
         private const string EMAIL_USERNAME = "webshop@company.com";
         private const string EMAIL_PASSWORD = "hardcoded_password_123";
-        private const string DB_CONNECTION = "Server=(localdb)\\mssqllocaldb;Database=TightlyCoupledWebShop;Trusted_Connection=true;MultipleActiveResultSets=true";
 
         public ShoppingCartController(ApplicationDbContext context,
-                                        ILogger<ShoppingCartController> logger)
+                                        ILogger<ShoppingCartController> logger,
+                                        IConfiguration configuration)
         {
             _context = context;
             _logger = logger;
-            
-            // Initialize file system dependencies in constructor - BAD!
-            Directory.CreateDirectory(Path.GetDirectoryName(LOG_FILE_PATH) ?? @"C:\Logs\WebShop");
-            Directory.CreateDirectory(Path.GetDirectoryName(INVENTORY_FILE_PATH) ?? @"C:\Data");
-            Directory.CreateDirectory(Path.GetDirectoryName(CONFIG_FILE_PATH) ?? @"C:\Config");
-            
-            // Create initial config file if not exists
-            if (!System.IO.File.Exists(CONFIG_FILE_PATH))
-            {
-                System.IO.File.WriteAllText(CONFIG_FILE_PATH, "max_cart_items=10\nmax_price_per_item=1000\nwarehouse_email=warehouse@company.com");
-            }
-        }
-        
-        // Tightly coupled file system logging - mixing concerns
-        private void WriteToLogFile(string message)
-        {
-            try
-            {
-                System.IO.File.AppendAllText(LOG_FILE_PATH, $"{message}{Environment.NewLine}");
-            }
-            catch
-            {
-                // Swallow exceptions - another bad practice
-            }
+            _configuration = configuration;
         }
         
         // Business rules hard-coded and mixed with infrastructure
         private bool ValidateBusinessRules(string itemName, int quantity, decimal price)
         {
             // Read business rules from config file - tight file coupling
-            var configLines = System.IO.File.ReadAllLines(CONFIG_FILE_PATH);
-            var maxItems = int.Parse(configLines[0].Split('=')[1]);
-            var maxPrice = decimal.Parse(configLines[1].Split('=')[1]);
+            var maxItems = 5;
+            var maxPrice = 2000m;
             
             if (quantity > maxItems)
             {
-                WriteToLogFile($"[{DateTime.Now}] BUSINESS RULE VIOLATION: Quantity {quantity} exceeds max {maxItems}");
+                _logger.LogWarning($" BUSINESS RULE VIOLATION: Quantity {quantity} exceeds max {maxItems}");
                 return false;
             }
             
             if (price > maxPrice)
             {
-                WriteToLogFile($"[{DateTime.Now}] BUSINESS RULE VIOLATION: Price {price:C} exceeds max {maxPrice:C}");
+                _logger.LogWarning($" BUSINESS RULE VIOLATION: Price {price:C} exceeds max {maxPrice:C}");
                 return false;
             }
             
             // Special business rules for specific items - hard-coded
             if (itemName.ToLower().Contains("premium") && DateTime.Now.Hour < 9)
             {
-                WriteToLogFile($"[{DateTime.Now}] BUSINESS RULE: Premium items not available before 9 AM");
+                _logger.LogWarning($" BUSINESS RULE: Premium items not available before 9 AM");
                 return false;
             }
             
@@ -125,11 +102,11 @@ namespace TightlyCoupled.WebShop.Controllers
                 }
                 
                 doc.Save(INVENTORY_FILE_PATH);
-                WriteToLogFile($"[{DateTime.Now}] INVENTORY: Updated {itemName} stock");
+                _logger.LogInformation($" INVENTORY: Updated {itemName} stock");
             }
             catch (Exception ex)
             {
-                WriteToLogFile($"[{DateTime.Now}] INVENTORY ERROR: {ex.Message}");
+                _logger.LogError($"INVENTORY ERROR: {ex.Message}");
             }
         }
         
@@ -157,12 +134,12 @@ namespace TightlyCoupled.WebShop.Controllers
                 
                 // Synchronous call - blocks the request
                 var response = httpClient.PostAsync(ANALYTICS_URL, content).Result;
-                
-                WriteToLogFile($"[{DateTime.Now}] ANALYTICS: Sent {action} data for {userEmail}");
+
+                _logger.LogInformation($"ANALYTICS: Sent {action} data for {userEmail}");
             }
             catch (Exception ex)
             {
-                WriteToLogFile($"[{DateTime.Now}] ANALYTICS ERROR: {ex.Message}");
+                _logger.LogError($" ANALYTICS ERROR: {ex.Message}");
             }
         }
 
@@ -173,20 +150,21 @@ namespace TightlyCoupled.WebShop.Controllers
             {
                 var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
                 var userEmail = User.Identity?.Name ?? "Unknown";
-                
-                WriteToLogFile($"[{DateTime.Now}] User {userEmail} accessing cart");
+
+                _logger.LogInformation($" User {userEmail} accessing cart");
                 
                 if (string.IsNullOrEmpty(userId))
                 {
                     _logger.LogWarning("Anonymous user attempted to view shopping cart");
-                    WriteToLogFile($"[{DateTime.Now}] SECURITY: Anonymous access attempt from IP: {Request.HttpContext.Connection.RemoteIpAddress}");
+                    _logger.LogInformation($" SECURITY: Anonymous access attempt from IP: {Request.HttpContext.Connection.RemoteIpAddress}");
                     return RedirectToAction("Login", "Account", new { area = "Identity" });
                 }
 
                 // Direct SQL query instead of using EF properly - tight database coupling
                 var cartItems = new List<CartItem>();
+                var connectionString = _configuration.GetConnectionString("TightlyCoupledWebShop");
                 
-                using (var connection = new SqlConnection(DB_CONNECTION))
+                using (var connection = new SqlConnection(connectionString))
                 {
                     connection.Open();
                     // SQL injection vulnerability for demonstration
@@ -208,7 +186,7 @@ namespace TightlyCoupled.WebShop.Controllers
                     }
                 }
 
-                WriteToLogFile($"[{DateTime.Now}] User {userEmail} viewed cart with {cartItems.Count} items");
+                _logger.LogInformation($" User {userEmail} viewed cart with {cartItems.Count} items");
                 SendAnalyticsData(userEmail, "ViewCart", "", cartItems.Count, cartItems.Sum(c => c.Price * c.Quantity));
 
                 return View(cartItems);
@@ -216,7 +194,7 @@ namespace TightlyCoupled.WebShop.Controllers
             catch (Exception ex)
             {
                 var userEmail = User.Identity?.Name ?? "Unknown";
-                WriteToLogFile($"[{DateTime.Now}] ERROR for {userEmail}: {ex.Message}");
+                _logger.LogError($" ERROR for {userEmail}: {ex.Message}");
                 _logger.LogError(ex, "Error occurred while loading shopping cart for user {UserEmail}", userEmail);
                 
                 // Send error notification to warehouse - hard-coded email
@@ -236,11 +214,11 @@ namespace TightlyCoupled.WebShop.Controllers
                 
                 if (string.IsNullOrEmpty(userId))
                 {
-                    WriteToLogFile($"[{DateTime.Now}] SECURITY: Anonymous user tried to add {name}");
+                    _logger.LogInformation($" SECURITY: Anonymous user tried to add {name}");
                     return RedirectToAction("Login", "Account", new { area = "Identity" });
                 }
 
-                WriteToLogFile($"[{DateTime.Now}] User {userEmail} adding item {name}");
+                _logger.LogInformation($" User {userEmail} adding item {name}");
 
                 // Validate business rules
                 if (!ValidateBusinessRules(name, quantity, price))
@@ -252,7 +230,8 @@ namespace TightlyCoupled.WebShop.Controllers
                 if (!string.IsNullOrEmpty(name) && price > 0 && quantity > 0)
                 {
                     // Direct SQL operations - bypassing EF
-                    using (var connection = new SqlConnection(DB_CONNECTION))
+                    var connectionString = _configuration.GetConnectionString("TightlyCoupledWebShop");
+                    using (var connection = new SqlConnection(connectionString))
                     {
                         connection.Open();
                         
@@ -276,8 +255,8 @@ namespace TightlyCoupled.WebShop.Controllers
                             var newQuantity = existingQuantity + quantity;
                             var updateCommand = new SqlCommand($"UPDATE CartItems SET Quantity = {newQuantity} WHERE Id = {existingId}", connection);
                             updateCommand.ExecuteNonQuery();
-                            
-                            WriteToLogFile($"[{DateTime.Now}] Updated {name} for {userEmail}: {existingQuantity} -> {newQuantity}");
+
+                            _logger.LogInformation($" Updated {name} for {userEmail}: {existingQuantity} -> {newQuantity}");
                             TempData["SuccessMessage"] = $"Updated {name} quantity in cart. New quantity: {newQuantity}";
                         }
                         else
@@ -285,8 +264,8 @@ namespace TightlyCoupled.WebShop.Controllers
                             // Insert new item
                             var insertCommand = new SqlCommand($"INSERT INTO CartItems (UserId, ItemName, Price, Quantity, DateAdded) VALUES ('{userId}', '{name}', {price}, {quantity}, '{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}')", connection);
                             insertCommand.ExecuteNonQuery();
-                            
-                            WriteToLogFile($"[{DateTime.Now}] Added new {name} for {userEmail}");
+
+                            _logger.LogInformation($" Added new {name} for {userEmail}");
                             TempData["SuccessMessage"] = $"Added {name} to cart!";
                         }
                     }
@@ -305,7 +284,7 @@ namespace TightlyCoupled.WebShop.Controllers
                 }
                 else
                 {
-                    WriteToLogFile($"[{DateTime.Now}] VALIDATION ERROR for {userEmail}: Invalid item details");
+                    _logger.LogWarning($" VALIDATION ERROR for {userEmail}: Invalid item details");
                     TempData["ErrorMessage"] = "Invalid item details. Please try again.";
                 }
                 
@@ -314,7 +293,6 @@ namespace TightlyCoupled.WebShop.Controllers
             catch (Exception ex)
             {
                 var userEmail = User.Identity?.Name ?? "Unknown";
-                WriteToLogFile($"[{DateTime.Now}] EXCEPTION for {userEmail}: {ex.Message}");
                 _logger.LogError(ex, "Error occurred while adding item {ItemName} to cart for user {UserEmail}", name, userEmail);
                 throw;
             }
@@ -341,12 +319,12 @@ namespace TightlyCoupled.WebShop.Controllers
                     smtpClient.Send(message);
                     smtpClient.Disconnect(true);
                 }
-                
-                WriteToLogFile($"[{DateTime.Now}] WAREHOUSE: Notified about high-value item for {userEmail}");
+
+                _logger.LogInformation($" WAREHOUSE: Notified about high-value item for {userEmail}");
             }
             catch (Exception ex)
             {
-                WriteToLogFile($"[{DateTime.Now}] WAREHOUSE EMAIL ERROR: {ex.Message}");
+                _logger.LogError($" WAREHOUSE EMAIL ERROR: {ex.Message}");
             }
         }
         
@@ -416,12 +394,12 @@ WebShop System"
                     smtpClient.Send(message);
                     smtpClient.Disconnect(true);
                 }
-                
-                WriteToLogFile($"[{DateTime.Now}] APPROVAL EMAIL: Sent to manager for {userEmail}");
+
+                _logger.LogInformation($" APPROVAL EMAIL: Sent to manager for {userEmail}");
             }
             catch (Exception ex)
             {
-                WriteToLogFile($"[{DateTime.Now}] APPROVAL EMAIL ERROR: {ex.Message}");
+                _logger.LogError($" APPROVAL EMAIL ERROR: {ex.Message}");
             }
         }
 
@@ -431,8 +409,8 @@ WebShop System"
             // Original implementation but with added file logging
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             var userEmail = User.Identity?.Name ?? "Unknown";
-            
-            WriteToLogFile($"[{DateTime.Now}] User {userEmail} removing item {name}");
+
+            _logger.LogInformation($" User {userEmail} removing item {name}");
             
             var itemToRemove = await _context.CartItems
                 .FirstOrDefaultAsync(c => c.UserId == userId && c.ItemName.ToLower() == name.ToLower());
@@ -461,12 +439,12 @@ WebShop System"
                 // Update global state - bad practice from UserStatsViewComponent
                 GlobalUtilities.CurrentUser = userEmail;
                 GlobalUtilities.LastActivity = DateTime.Now;
-                
-                WriteToLogFile($"[{DateTime.Now}] CHECKOUT STARTED: User {userEmail} with shipping {details.shippingOption} to {details.customerAddress}");
+
+                _logger.LogInformation($" CHECKOUT STARTED: User {userEmail} with shipping {details.shippingOption} to {details.customerAddress}");
                 
                 if (string.IsNullOrEmpty(userId))
                 {
-                    WriteToLogFile($"[{DateTime.Now}] SECURITY: Anonymous checkout attempt");
+                    _logger.LogWarning($" SECURITY: Anonymous checkout attempt");
                     return Unauthorized();
                 }
 
@@ -478,8 +456,9 @@ WebShop System"
                 // Direct SQL query instead of using EF - SQL injection vulnerability
                 var cartItems = new List<CartItem>();
                 decimal subtotal = 0;
+                var connectionString = _configuration.GetConnectionString("TightlyCoupledWebShop");
                 
-                using (var connection = new SqlConnection(DB_CONNECTION))
+                using (var connection = new SqlConnection(connectionString))
                 {
                     connection.Open();
                     // Terrible SQL with injection vulnerability
@@ -513,11 +492,11 @@ WebShop System"
 
                 if (!cartItems.Any())
                 {
-                    WriteToLogFile($"[{DateTime.Now}] CHECKOUT FAILED: Empty cart for {userEmail}");
+                    _logger.LogWarning($" CHECKOUT FAILED: Empty cart for {userEmail}");
                     return RedirectToAction("Index");
                 }
 
-                WriteToLogFile($"[{DateTime.Now}] Cart loaded: {cartItems.Count} items, subtotal: {subtotal:C}");
+                _logger.LogInformation($" Cart loaded: {cartItems.Count} items, subtotal: {subtotal:C}");
 
                 // Complex business rules hard-coded in controller
                 var isVipCustomer = subtotal > 1000;
@@ -529,20 +508,20 @@ WebShop System"
                 if (isWeekend && !isVipCustomer)
                 {
                     subtotal *= 1.05m; // 5% weekend surcharge
-                    WriteToLogFile($"[{DateTime.Now}] SURCHARGE: Weekend surcharge applied to {userEmail}");
+                    _logger.LogInformation($" SURCHARGE: Weekend surcharge applied to {userEmail}");
                 }
 
                 // Holiday season bonus - more business logic
                 if (isHolidaySeason)
                 {
                     subtotal *= 0.95m; // 5% holiday discount
-                    WriteToLogFile($"[{DateTime.Now}] DISCOUNT: Holiday discount applied to {userEmail}");
+                    _logger.LogInformation($" DISCOUNT: Holiday discount applied to {userEmail}");
                 }
 
                 // Check order value limits
                 if (subtotal > maxOrderValue)
                 {
-                    WriteToLogFile($"[{DateTime.Now}] ORDER LIMIT EXCEEDED: {userEmail} attempted {subtotal:C} > {maxOrderValue:C}");
+                    _logger.LogWarning($" ORDER LIMIT EXCEEDED: {userEmail} attempted {subtotal:C} > {maxOrderValue:C}");
                     SendEmail("Order Rejected", $"Your order of {subtotal:C} exceeds our limit of {maxOrderValue:C}");
                     return RedirectToAction("CartError");
                 }
@@ -564,7 +543,7 @@ WebShop System"
                     };
                     
                     System.IO.File.WriteAllText(approvalFile, JsonSerializer.Serialize(approvalRequest, new JsonSerializerOptions { WriteIndented = true }));
-                    WriteToLogFile($"[{DateTime.Now}] APPROVAL REQUIRED: Request saved for {userEmail}");
+                    _logger.LogInformation($" APPROVAL REQUIRED: Request saved for {userEmail}");
                     
                     // Send approval email to manager - hard-coded recipient
                     SendManagerApprovalEmail(userEmail, subtotal, approvalFile);
@@ -581,7 +560,7 @@ WebShop System"
                 {
                     try
                     {
-                        WriteToLogFile($"[{DateTime.Now}] TAX SERVICE: Attempt {attempt} for {userEmail}");
+                        _logger.LogInformation($" TAX SERVICE: Attempt {attempt} for {userEmail}");
                         var httpClient = new HttpClient();
                         httpClient.Timeout = TimeSpan.FromSeconds(10);
                         
@@ -601,17 +580,17 @@ WebShop System"
                             var taxResponse = response.Content.ReadAsStringAsync().Result;
                             var taxData = JsonSerializer.Deserialize<dynamic>(taxResponse);
                             taxRate = Convert.ToDecimal(taxData?.GetProperty("rate").GetDecimal() ?? 0.08m);
-                            WriteToLogFile($"[{DateTime.Now}] TAX RATE: {taxRate:P} for {userEmail}");
+                            _logger.LogInformation($" TAX RATE: {taxRate:P} for {userEmail}");
                             break;
                         }
                     }
                     catch (Exception ex)
                     {
-                        WriteToLogFile($"[{DateTime.Now}] TAX SERVICE ERROR (Attempt {attempt}): {ex.Message}");
+                        _logger.LogError($" TAX SERVICE ERROR (Attempt {attempt}): {ex.Message}");
                         if (attempt == 3)
                         {
                             taxRate = isVipCustomer ? 0.05m : 0.08m; // Fallback rates
-                            WriteToLogFile($"[{DateTime.Now}] TAX FALLBACK: Using {taxRate:P} for {userEmail}");
+                            _logger.LogError($" TAX FALLBACK: Using {taxRate:P} for {userEmail}");
                         }
                         Thread.Sleep(1000 * attempt); // Linear backoff - blocking
                     }
@@ -620,7 +599,7 @@ WebShop System"
                 // Shipping service call - another external dependency
                 try
                 {
-                    WriteToLogFile($"[{DateTime.Now}] SHIPPING SERVICE: Calculating for {userEmail}");
+                    _logger.LogInformation($" SHIPPING SERVICE: Calculating for {userEmail}");
                     var shippingClient = new HttpClient();
                     shippingClient.Timeout = TimeSpan.FromSeconds(15);
                     
@@ -647,12 +626,12 @@ WebShop System"
                         shippingCost = details.shippingOption == "Express" ? (isVipCustomer ? 20 : 25) : (isVipCustomer ? 5 : 10);
                         courierService = details.shippingOption == "Express" ? "FedEx" : "USPS";
                     }
-                    
-                    WriteToLogFile($"[{DateTime.Now}] SHIPPING: {shippingCost:C} via {courierService} for {userEmail}");
+
+                    _logger.LogInformation($" SHIPPING: {shippingCost:C} via {courierService} for {userEmail}");
                 }
                 catch (Exception ex)
                 {
-                    WriteToLogFile($"[{DateTime.Now}] SHIPPING ERROR: {ex.Message}");
+                    _logger.LogError($" SHIPPING ERROR: {ex.Message}");
                     shippingCost = details.shippingOption == "Express" ? 25 : 10; // Hard-coded fallback
                     courierService = "Standard";
                 }
@@ -666,10 +645,10 @@ WebShop System"
                 {
                     var vipDiscount = totalPrice * 0.02m; // 2% VIP discount
                     totalPrice -= vipDiscount;
-                    WriteToLogFile($"[{DateTime.Now}] VIP DISCOUNT: {vipDiscount:C} applied to {userEmail}");
+                    _logger.LogInformation($" VIP DISCOUNT: {vipDiscount:C} applied to {userEmail}");
                 }
 
-                WriteToLogFile($"[{DateTime.Now}] PRICING: Subtotal={subtotal:C}, Tax={taxAmount:C}, Shipping={shippingCost:C}, Total={totalPrice:C}");
+                _logger.LogInformation($" PRICING: Subtotal={subtotal:C}, Tax={taxAmount:C}, Shipping={shippingCost:C}, Total={totalPrice:C}");
 
                 // Inventory management via XML files - file system coupling
                 foreach (var item in cartItems)
@@ -680,12 +659,12 @@ WebShop System"
                         
                         // Also log to separate inventory tracking file
                         var inventoryLogFile = Path.Combine(GlobalUtilities.DATA_DIRECTORY, "inventory_transactions.log");
-                        var inventoryEntry = $"[{DateTime.Now}] CHECKOUT: -{item.Quantity} {item.ItemName} for order by {userEmail}";
+                        var inventoryEntry = $" CHECKOUT: -{item.Quantity} {item.ItemName} for order by {userEmail}";
                         System.IO.File.AppendAllText(inventoryLogFile, inventoryEntry + Environment.NewLine);
                     }
                     catch (Exception ex)
                     {
-                        WriteToLogFile($"[{DateTime.Now}] INVENTORY ERROR: {ex.Message} for item {item.ItemName}");
+                        _logger.LogError($" INVENTORY ERROR: {ex.Message} for item {item.ItemName}");
                         // Continue processing even if inventory update fails
                     }
                 }
@@ -698,7 +677,7 @@ WebShop System"
                 {
                     try
                     {
-                        WriteToLogFile($"[{DateTime.Now}] PAYMENT: Attempt {paymentAttempt} using {paymentMethod} for {userEmail}");
+                        _logger.LogInformation($" PAYMENT: Attempt {paymentAttempt} using {paymentMethod} for {userEmail}");
                         
                         var paymentProcessor = new PaymentProcessor();
                         
@@ -718,8 +697,8 @@ WebShop System"
                             // Standard payment processing
                             paymentResult = paymentProcessor.ProcessPayment(totalPrice);
                         }
-                        
-                        WriteToLogFile($"[{DateTime.Now}] PAYMENT RESULT: {paymentResult} for {userEmail}");
+
+                        _logger.LogInformation($" PAYMENT RESULT: {paymentResult} for {userEmail}");
                         
                         if (paymentResult == "Approved")
                         {
@@ -729,19 +708,19 @@ WebShop System"
                         {
                             // Try different payment method on first failure
                             paymentMethod = "CreditCard";
-                            WriteToLogFile($"[{DateTime.Now}] PAYMENT: Retrying with {paymentMethod} for {userEmail}");
+                            _logger.LogInformation($" PAYMENT: Retrying with {paymentMethod} for {userEmail}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        WriteToLogFile($"[{DateTime.Now}] PAYMENT EXCEPTION: {ex.Message}");
+                        _logger.LogError($" PAYMENT EXCEPTION: {ex.Message}");
                         paymentResult = "Error";
                     }
                 }
 
                 if (paymentResult != "Approved")
                 {
-                    WriteToLogFile($"[{DateTime.Now}] PAYMENT FAILED: {paymentResult} for {userEmail}");
+                    _logger.LogWarning($" PAYMENT FAILED: {paymentResult} for {userEmail}");
                     
                     // Send failure notification with detailed information
                     var failureEmail = $@"
@@ -789,7 +768,7 @@ WebShop Team";
 
                 // Create order using direct SQL instead of EF for "performance" - more tight coupling
                 int orderId = 0;
-                using (var connection = new SqlConnection(DB_CONNECTION))
+                using (var connection = new SqlConnection(connectionString))
                 {
                     connection.Open();
                     using (var transaction = connection.BeginTransaction())
@@ -804,8 +783,8 @@ WebShop Team";
                             
                             var orderCommand = new SqlCommand(orderSql, connection, transaction);
                             orderId = Convert.ToInt32(orderCommand.ExecuteScalar());
-                            
-                            WriteToLogFile($"[{DateTime.Now}] ORDER CREATED: {orderId} for {userEmail}");
+
+                            _logger.LogInformation($" ORDER CREATED: {orderId} for {userEmail}");
 
                             // Insert order items
                             foreach (var item in cartItems)
@@ -824,12 +803,12 @@ WebShop Team";
                             clearCommand.ExecuteNonQuery();
 
                             transaction.Commit();
-                            WriteToLogFile($"[{DateTime.Now}] ORDER COMMITTED: {orderId} for {userEmail}");
+                            _logger.LogInformation($" ORDER COMMITTED: {orderId} for {userEmail}");
                         }
                         catch (Exception ex)
                         {
                             transaction.Rollback();
-                            WriteToLogFile($"[{DateTime.Now}] ORDER ROLLBACK: {ex.Message}");
+                            _logger.LogError($" ORDER ROLLBACK: {ex.Message}");
                             throw;
                         }
                     }
@@ -856,12 +835,12 @@ WebShop Team";
                     
                     var warehouseContent = new StringContent(JsonSerializer.Serialize(warehouseData), Encoding.UTF8, "application/json");
                     var warehouseResponse = warehouseClient.PostAsync("http://warehouse.company.com/api/fulfill", warehouseContent).Result;
-                    
-                    WriteToLogFile($"[{DateTime.Now}] WAREHOUSE: Notification sent for order {orderId}");
+
+                    _logger.LogInformation($" WAREHOUSE: Notification sent for order {orderId}");
                 }
                 catch (Exception ex)
                 {
-                    WriteToLogFile($"[{DateTime.Now}] WAREHOUSE ERROR: {ex.Message}");
+                    _logger.LogError($" WAREHOUSE ERROR: {ex.Message}");
                 }
 
                 // CRM system update
@@ -879,12 +858,12 @@ WebShop Team";
                     
                     var crmContent = new StringContent(JsonSerializer.Serialize(crmData), Encoding.UTF8, "application/json");
                     var crmResponse = crmClient.PostAsync("http://crm.company.com/api/update-customer", crmContent).Result;
-                    
-                    WriteToLogFile($"[{DateTime.Now}] CRM: Customer data updated for {userEmail}");
+
+                    _logger.LogInformation($" CRM: Customer data updated for {userEmail}");
                 }
                 catch (Exception ex)
                 {
-                    WriteToLogFile($"[{DateTime.Now}] CRM ERROR: {ex.Message}");
+                    _logger.LogError($" CRM ERROR: {ex.Message}");
                 }
 
                 // Save order summary to file for backup
@@ -948,7 +927,7 @@ Order processed on {Environment.MachineName} at {DateTime.Now}
 
                 SendEmail($"Order Confirmation #{orderId}", confirmationEmail);
 
-                WriteToLogFile($"[{DateTime.Now}] CHECKOUT COMPLETE: Order {orderId} for {userEmail} - Total: {totalPrice:C}");
+                _logger.LogInformation($" CHECKOUT COMPLETE: Order {orderId} for {userEmail} - Total: {totalPrice:C}");
                 
                 // Update global statistics
                 GlobalUtilities.ErrorCount = 0; // Reset error count on successful order
@@ -986,14 +965,14 @@ Order processed on {Environment.MachineName} at {DateTime.Now}
             catch (Exception ex)
             {
                 var userEmail = User.Identity?.Name ?? "Unknown";
-                WriteToLogFile($"[{DateTime.Now}] CHECKOUT EXCEPTION: {ex.Message} for {userEmail}");
+                _logger.LogError($" CHECKOUT EXCEPTION: {ex.Message} for {userEmail}");
                 
                 // Send detailed error report to admin
                 SendErrorNotificationToWarehouse(userEmail, $"Checkout failed: {ex.Message}\n\nStack Trace:\n{ex.StackTrace}");
                 
                 // Also save error details for debugging
                 var errorFile = Path.Combine(GlobalUtilities.LOG_DIRECTORY, $"checkout_errors_{DateTime.Now:yyyy-MM-dd}.log");
-                var errorDetails = $"[{DateTime.Now}] CHECKOUT ERROR for {userEmail}:\n{ex}\n\n";
+                var errorDetails = $" CHECKOUT ERROR for {userEmail}:\n{ex}\n\n";
                 System.IO.File.AppendAllText(errorFile, errorDetails);
                 
                 throw; // Re-throw for controller error handling
@@ -1032,12 +1011,12 @@ Order processed on {Environment.MachineName} at {DateTime.Now}
                     smtpClient.Send(message);
                     smtpClient.Disconnect(true);
                 }
-                
-                WriteToLogFile($"[{DateTime.Now}] EMAIL: Sent {subject} to {userEmail}");
+
+                _logger.LogInformation($" EMAIL: Sent {subject} to {userEmail}");
             }
             catch (Exception ex)
             {
-                WriteToLogFile($"[{DateTime.Now}] EMAIL ERROR: {ex.Message}");
+                _logger.LogError($" EMAIL ERROR: {ex.Message}");
             }
         }
     }
