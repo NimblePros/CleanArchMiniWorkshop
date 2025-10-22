@@ -511,29 +511,6 @@ public class PlaceOrder(IMediator mediator) : Endpoint<PlaceOrderCommand>
 - Automatic OpenAPI/Swagger generation
 - Easy to test
 
-**Alternative with Response DTO:**
-If you want to return more details, you can create:
-```csharp
-public record PlaceOrderResponse(int OrderId, decimal TotalAmount);
-
-public class PlaceOrder : Endpoint<PlaceOrderCommand, PlaceOrderResponse>
-{
-  // ... map result to response DTO
-}
-```
-  }
-
-  [HttpGet("{orderId}")]
-  [ProducesResponseType(StatusCodes.Status200OK)]
-  [ProducesResponseType(StatusCodes.Status404NotFound)]
-  public async Task<ActionResult> GetOrder(int orderId)
-  {
-    // TODO: Implement in next exercise
-    return Ok(new { orderId, message = "Get order endpoint - to be implemented" });
-  }
-}
-```
-
 **API Design:**
 - POST creates a resource → Returns 201 Created
 - Location header points to the new resource
